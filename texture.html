@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Voronoi Leopard — Upload Texture</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      body {
+        margin: 0;
+        font-family: system-ui, -apple-system, sans-serif;
+        background: radial-gradient(circle at top, #1d1f22 0%, #0f0f10 45%, #0a0a0a 100%);
+        color: #fff;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        min-height: 100vh;
+      }
+      header { text-align: center; padding: 1rem; }
+      h2 { margin: 0; font-size: 1rem; font-weight: 500; }
+
+      main {
+        display: flex; flex-wrap: wrap; gap: 1rem;
+        justify-content: center; align-items: flex-start;
+        max-width: 1100px; width: 100%; padding: 1rem;
+      }
+      aside {
+        background: rgba(255,255,255,0.05);
+        border-radius: 1rem; padding: 1rem;
+        width: 260px;
+      }
+      label { font-size: .65rem; }
+      input[type="range"] { width: 100%; accent-color: #fff; }
+      .control { margin-bottom: .8rem; }
+      .row { display: flex; justify-content: space-between; font-size: .6rem; color: #ccc; }
+
+      button {
+        border: none; border-radius: .5rem; padding: .4rem .7rem;
+        font-size: .6rem; cursor: pointer;
+      }
+      .primary { background: #fff; color: #000; }
+      .ghost { background: rgba(255,255,255,0.1); color: #fff; }
+
+      .preview {
+        flex: 1 1 600px; display: flex; justify-content: center; align-items: center;
+        border: 1px solid rgba(255,255,255,0.05); border-radius: 1rem;
+        background: transparent;
+      }
+      svg { width: 600px; height: 600px; transition: opacity .3s; }
+    </style>
+  </head>
+  <body>
+    <header><h2>Voronoi Leopard</h2></header>
+    <main>
+      <aside>
+        <div class="control">
+          <label>텍스처 업로드 (PNG/JPG)</label><br />
+          <input type="file" id="texInput" accept="image/*" />
+          <div id="texStatus" style="font-size:.6rem;color:#aaa;">아직 텍스처 없음</div>
+        </div>
+        <div class="control"><div class="row"><span>셀 개수</span><span id="count-val"></span></div><input id="count" type="range" min="10" max="120" value="70"></div>
+        <div class="control"><div class="row"><span>모서리 둥글기</span><span id="round-val"></span></div><input id="round" type="range" min="0" max="40" value="16"></div>
+        <div class="control"><div class="row"><span>도넛 폭</span><span id="band-val"></span></div><input id="band" type="range" min="5" max="35" value="18"></div>
+        <div class="control"><div class="row"><span>Turbulence</span><span id="turb-val"></span></div><input id="turb" type="range" min="0" max="50" value="10"></div>
+        <div class="control"><div class="row"><span>Displace</span><span id="disp-val"></span></div><input id="disp" type="range" min="0" max="40" value="10"></div>
+        <div class="control"><div class="row"><span>셀 간격</span><span id="gap-val"></span></div><input id="gap" type="range" min="-10" max="20" value="0"></div>
+        <div class="control"><label><input id="invert" type="checkbox"> 색 반전</label></div>
+        <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-top:1rem;">
+          <button id="randomize" class="primary">랜덤</button>
+          <button id="download" class="ghost">PNG 저장</button>
+        </div>
+      </aside>
+      <section class="preview"><svg id="canvas"></svg></section>
+    </main>
+
+    <script>
+      const svg = document.getElementById("canvas");
+      const texInput = document.getElementById("texInput");
+      const texStatus = document.getElementById("texStatus");
+      const controls = ["count","round","band","turb","disp","gap"];
+      const inputs = Object.fromEntries(controls.map(id=>[id,document.getElementById(id)]));
+      const labels = Object.fromEntries(controls.map(id=>[id,document.getElementById(id+"-val")]));
+      const invert = document.getElementById("invert");
+      const randomBtn = document.getElementById("randomize");
+      const downloadBtn = document.getElementById("download");
+
+      const W=600,H=600;
+      let seed=Math.random(),fixedSeed=seed,textureDataURL=null;
+
+      const rnd=()=> (seed=(seed*9301+49297)%233280)/233280;
+      const centroid=poly=>poly.reduce(([x,y],[px,py])=>[x+px,y+py],[0,0]).map(v=>v/poly.length);
+      const insetPolygon=(poly,dist)=>{const c=centroid(poly);return poly.map(([x,y])=>[x-(x-c[0])*dist,y-(y-c[1])*dist])};
+      const lineIntersect=(p1,p2,a,b,c)=>{const[x1,y1]=p1,[x2,y2]=p2,dx=x2-x1,dy=y2-y1,den=a*dx+b*dy;if(Math.abs(den)<1e-6)return null;const t=-(a*x1+b*y1+c)/den;return[x1+t*dx,y1+t*dy]};
+      const clipPolygon=(poly,a,b,c)=>{const out=[];for(let i=0;i<poly.length;i++){const p1=poly[i],p2=poly[(i+1)%poly.length],d1=a*p1[0]+b*p1[1]+c,d2=a*p2[0]+b*p2[1]+c,in1=d1>=0,in2=d2>=0;if(in1&&in2)out.push(p2);else if(in1&&!in2){const inter=lineIntersect(p1,p2,a,b,c);if(inter)out.push(inter)}else if(!in1&&in2){const inter=lineIntersect(p1,p2,a,b,c);if(inter)out.push(inter);out.push(p2)}}return out};
+      const makeRoundedPath=(pts,r)=>{if(!pts.length)return"";let d="";for(let i=0;i<pts.length;i++){const p0=pts[(i-1+pts.length)%pts.length],p1=pts[i],p2=pts[(i+1)%pts.length],v1=[p1[0]-p0[0],p1[1]-p0[1]],v2=[p2[0]-p1[0],p2[1]-p1[1]],l1=Math.hypot(...v1),l2=Math.hypot(...v2),r1=Math.min(r,l1/2),r2=Math.min(r,l2/2),p1a=[p1[0]-(v1[0]/l1)*r1,p1[1]-(v1[1]/l1)*r1],p1b=[p1[0]+(v2[0]/l2)*r2,p1[1]+(v2[1]/l2)*r2];if(!i)d+=`M${p1a[0]},${p1a[1]} `;else d+=`L${p1a[0]},${p1a[1]} `;d+=`Q${p1[0]},${p1[1]} ${p1b[0]},${p1b[1]} `}return d+"Z"};
+
+      const draw=()=>{
+        if(!textureDataURL){texStatus.textContent="⚠️ 텍스처 먼저 업로드";return;}
+        svg.innerHTML="";
+        const defs=document.createElementNS("http://www.w3.org/2000/svg","defs");
+        svg.appendChild(defs);
+        const filter=document.createElementNS("http://www.w3.org/2000/svg","filter");
+        filter.id="noise";
+        const feT=document.createElementNS("http://www.w3.org/2000/svg","feTurbulence");
+        feT.setAttribute("type","fractalNoise");
+        feT.setAttribute("baseFrequency",(inputs.turb.value/1000).toFixed(3));
+        feT.setAttribute("numOctaves","2");
+        const feD=document.createElementNS("http://www.w3.org/2000/svg","feDisplacementMap");
+        feD.setAttribute("in","SourceGraphic");
+        feD.setAttribute("scale",inputs.disp.value);
+        feD.setAttribute("xChannelSelector","R");
+        feD.setAttribute("yChannelSelector","G");
+        filter.append(feT,feD);
+        defs.appendChild(filter);
+
+        seed=fixedSeed;
+        const n=+inputs.count.value,roundness=+inputs.round.value,band=+inputs.band.value,gap=+inputs.gap.value;
+        const pts=Array.from({length:n},()=>[rnd()*W,rnd()*H]);
+        for(let i=0;i<n;i++){
+          let cell=[[0,0],[W,0],[W,H],[0,H]];
+          const pi=pts[i];
+          for(let j=0;j<n;j++){
+            if(i===j)continue;
+            const pj=pts[j];
+            let a=pj[0]-pi[0],b=pj[1]-pi[1];
+            const mx=(pi[0]+pj[0])/2,my=(pi[1]+pj[1])/2;
+            let c=-(a*mx+b*my);
+            if(a*pi[0]+b*pi[1]+c<0){a=-a;b=-b;c=-c;}
+            cell=clipPolygon(cell,a,b,c);
+            if(!cell.length)break;
+          }
+          if(!cell.length)continue;
+          cell=insetPolygon(cell,gap/200);
+          const outerRatio=0.22,innerRatio=Math.min(outerRatio+band/100,0.9);
+          const dOuter=makeRoundedPath(insetPolygon(cell,outerRatio),roundness*0.5);
+          const dInner=makeRoundedPath(insetPolygon(cell,innerRatio),roundness*0.35);
+          const patId=`tex-${i}`;
+          const pat=document.createElementNS("http://www.w3.org/2000/svg","pattern");
+          pat.id=patId;pat.setAttribute("patternUnits","userSpaceOnUse");
+          pat.setAttribute("width",W);pat.setAttribute("height",H);
+          const img=document.createElementNS("http://www.w3.org/2000/svg","image");
+          img.setAttributeNS("http://www.w3.org/1999/xlink","href",textureDataURL);
+          img.setAttribute("width",W);img.setAttribute("height",H);
+          if(invert.checked)img.style.filter="invert(1)";
+          const rot=(rnd()*30-15).toFixed(2),scale=(0.6+rnd()*0.7).toFixed(2);
+          pat.setAttribute("patternTransform",`rotate(${rot} ${W/2} ${H/2}) scale(${scale})`);
+          pat.appendChild(img);defs.appendChild(pat);
+          const path=document.createElementNS("http://www.w3.org/2000/svg","path");
+          path.setAttribute("d",`${dOuter} ${dInner}`);
+          path.setAttribute("fill",`url(#${patId})`);
+          path.setAttribute("fill-rule","evenodd");
+          path.setAttribute("filter","url(#noise)");
+          svg.appendChild(path);
+        }
+      };
+
+      texInput.addEventListener("change",e=>{
+        const file=e.target.files[0];if(!file)return;
+        const reader=new FileReader();
+        reader.onload=ev=>{textureDataURL=ev.target.result;texStatus.textContent="✅ 텍스처 적용됨";draw();};
+        reader.readAsDataURL(file);
+      });
+
+      controls.forEach(id=>inputs[id].addEventListener("input",()=>{labels[id].textContent=inputs[id].value;draw();}));
+      randomBtn.addEventListener("click",()=>{fixedSeed=Math.random();draw();});
+      invert.addEventListener("input",()=>draw());
+
+      downloadBtn.addEventListener("click",()=>{
+        const serializer=new XMLSerializer();
+        const svgData=serializer.serializeToString(svg);
+        const blob=new Blob([svgData],{type:"image/svg+xml;charset=utf-8"});
+        const url=URL.createObjectURL(blob);
+        const img=new Image();
+        img.onload=function(){
+          const canvas=document.createElement("canvas");
+          canvas.width=W;canvas.height=H;
+          const ctx=canvas.getContext("2d");
+          ctx.drawImage(img,0,0);
+          const pngURL=canvas.toDataURL("image/png");
+          const a=document.createElement("a");
+          a.href=pngURL;a.download="voronoi_leopard.png";a.click();
+        };
+        img.src=url;
+      });
+
+      svg.innerHTML="<text x='50%' y='50%' text-anchor='middle' fill='#888' font-size='13'>텍스처를 업로드하세요</text>";
+    </script>
+  </body>
+</html>
+
+
